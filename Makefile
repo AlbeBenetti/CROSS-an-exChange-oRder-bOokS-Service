@@ -19,6 +19,8 @@ SERVER_MAIN = crossServer.ServerMain
 
 SOURCES := $(shell find $(SRC_DIR) -name "*.java")
 
+all: clean compile
+
 compile:
 	@mkdir -p $(BIN_DIR)
 	$(JAVAC) -cp $(GSON_JAR) -d $(BIN_DIR) $(SOURCES)
@@ -28,4 +30,7 @@ clean:
 	rm -rf $(BIN_DIR)/*
 	
 run-client:
+	$(JAVA) -cp $(CLASSPATH) $(CLIENT_MAIN)
 	
+run-server:
+	$(JAVA) -cp $(CLASSPATH) $(SERVER_MAIN)

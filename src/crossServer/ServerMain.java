@@ -37,13 +37,13 @@ public class ServerMain {
 
 	public static void main(String[] args) throws FileNotFoundException, IOException {
 		Properties p = new Properties();
-		try (FileInputStream fis = new FileInputStream("ServerProgettoFinale/serverConfig.properties")) {
+		try (FileInputStream fis = new FileInputStream("configs/serverConfig.properties")) {
 			p.load(fis);
 		}
 
 		int serverPort = Integer.parseInt(p.getProperty("porta"));
 		String indirizzo = p.getProperty("indirizzo");
-		String path=System.getProperty("user.dir") + "/ServerProgettoFinale/";
+		String path=System.getProperty("user.dir")+"/src/crossServer/";
 		String pathOrdini = path + p.getProperty("pathOrdini");
 		System.out.println(pathOrdini);
 		String pathUsers = path+ p.getProperty("pathUsers");

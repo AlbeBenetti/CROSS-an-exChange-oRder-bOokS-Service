@@ -22,7 +22,7 @@ public class ClientMain {
 
 	public static void main(String[] args) throws IOException {
 		Properties p=new Properties();
-		String path=System.getProperty("user.dir") +"/ClientProgettoFinale/clientConfig.properties";
+		String path=System.getProperty("user.dir") +"/configs/clientConfig.properties";
 		System.out.println("Path:" +path);
 		try(FileInputStream fis=new FileInputStream(path)){
 			p.load(fis);
