@@ -4,9 +4,12 @@ package crossServer;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.lang.reflect.Type;
 import java.net.ServerSocket;
+import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
@@ -16,6 +19,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.io.FileReader;
 import java.io.FileWriter;
 import com.google.gson.Gson;
@@ -30,47 +34,51 @@ import com.google.gson.stream.JsonWriter;
 import orderTypes.*;
 
 public class ServerMain {
-	// coppie username-pw su json
-	// qui salvate su una concurrenthashmap contenente gli utenti. chiave:username,
-	// valore:password;
 	private static Gson gson = new Gson();
-
+	private static AtomicInteger counter=new AtomicInteger(0);
+	
 	public static void main(String[] args) throws FileNotFoundException, IOException {
+		
 		Properties p = new Properties();
-		try (FileInputStream fis = new FileInputStream("configs/serverConfig.properties")) {
-			p.load(fis);
+		try (FileReader is = new FileReader("src/crossServer/resources/serverConfig.properties");) {
+			p.load(is);
 		}
-
 		int serverPort = Integer.parseInt(p.getProperty("porta"));
-		String indirizzo = p.getProperty("indirizzo");
 		String path=System.getProperty("user.dir")+"/src/crossServer/";
 		String pathOrdini = path + p.getProperty("pathOrdini");
-		System.out.println(pathOrdini);
 		String pathUsers = path+ p.getProperty("pathUsers");
+		int timeout=Integer.parseInt(p.getProperty("timeoutTime"));
 		ConcurrentHashMap<String, String> users = loadUsers(pathUsers);
-		CopyOnWriteArrayList<GenericOrder> storedOrders=new CopyOnWriteArrayList<GenericOrder>();
+		CopyOnWriteArrayList<OrdineEvaso> storedOrders=new CopyOnWriteArrayList<OrdineEvaso>();
 		loadOrders(storedOrders, pathOrdini);
 		System.out.println("Numero ordini memorizzati --> "+storedOrders.size());
 		ConcurrentHashMap<String, UserInfo> loggedUsers = new ConcurrentHashMap<String, UserInfo>();
-		ConcurrentLinkedQueue<GenericOrder> ordiniEvasi = new ConcurrentLinkedQueue<GenericOrder>();
+		ConcurrentLinkedQueue<OrdineEvaso> ordiniEvasi = new ConcurrentLinkedQueue<OrdineEvaso>();
 		ScheduledExecutorService userSaver = Executors.newSingleThreadScheduledExecutor();
-		userSaver.scheduleAtFixedRate(() -> {
+		userSaver.scheduleWithFixedDelay(() -> {
 			saveUsers(users, pathUsers);
 		}, 30L, 30L, TimeUnit.SECONDS);
 		ScheduledExecutorService orderSaver = Executors.newSingleThreadScheduledExecutor();
 		orderSaver.scheduleWithFixedDelay(() -> {
 			saveOrders(storedOrders, ordiniEvasi, pathOrdini);
 		}, 30L, 30L, TimeUnit.SECONDS);
-		OrderBook orders = new OrderBook(loggedUsers, storedOrders);
+		OrderBook orders = new OrderBook(loggedUsers, storedOrders, counter);
 		try (ServerSocket socket = new ServerSocket(serverPort);) {
+			
 			ExecutorService es = Executors.newCachedThreadPool();
 			while (true) {
-				es.execute(new CROSSExecutor(socket.accept(), users, loggedUsers, orders, ordiniEvasi));
+				es.execute(new CROSSExecutor(socket.accept(), users, loggedUsers, orders, ordiniEvasi, timeout));
 			}
 		} catch (IOException e) {
-			e.printStackTrace();
+			if(e instanceof SocketException) {
+				System.out.println("Socket chiusa");
+			}else {
+				e.printStackTrace();
+				
+			}
 		} finally {
 			saveUsers(users, pathUsers);
+			saveOrders(storedOrders, ordiniEvasi, pathOrdini);
 		}
 	}
 
@@ -88,7 +96,7 @@ public class ServerMain {
 	private static void saveUsers(ConcurrentHashMap<String, String> users, String path) {
 		try (FileWriter userWriter = new FileWriter(path)) {
 			String usersString = gson.toJson(users);
-			userWriter.write(usersString);
+			userWriter.write(usersString); 
 			return;
 		} catch (IOException e) {
 			e.printStackTrace();
@@ -96,97 +104,56 @@ public class ServerMain {
 		return;
 	}
 
-	private static void saveOrders(CopyOnWriteArrayList<GenericOrder> storedOrders, ConcurrentLinkedQueue<GenericOrder> ordiniEvasi, String path) {
-		if (ordiniEvasi.size() == 0) return;
-		//System.out.println(storedOrders.size());
+	private static void saveOrders(CopyOnWriteArrayList<OrdineEvaso> storedOrders, ConcurrentLinkedQueue<OrdineEvaso> ordiniEvasi, String path) {
+		if (ordiniEvasi.size() == 0) {
+			return;
+		}
 		try (JsonWriter orderWriter = new JsonWriter(new FileWriter(path))) {
-			// System.out.println(storedOrders.toString());
 			synchronized (ordiniEvasi) {
 				storedOrders.addAll(ordiniEvasi);
 				ordiniEvasi.clear();
 			}
-				/*for (GenericOrder order : ordiniEvasi) {
-					JsonObject o = new JsonObject();
-					o.addProperty("orderId", order.getId());
-					o.addProperty("type", orderTypeToString(order.getType()));
-					o.addProperty("orderType", order.getOrderType());
-					o.addProperty("size", order.getOriginalSize());
-					o.addProperty("price", order.getactualPrice());
-					o.addProperty("timestamp", order.getTimestamp());
-					o.addProperty("user", order.getUserOwner());
-					allOrders.add(o);
-				}*/
 			orderWriter.beginArray();
-				for(GenericOrder order : storedOrders) {
+				for(OrdineEvaso order : storedOrders) {
 					orderWriter.beginObject();
-	                orderWriter.name("orderID").value(order.getId());
-	                orderWriter.name("type").value(orderTypeToString(order.getType()));
+	                orderWriter.name("orderID").value(order.getOrderId());
+	                orderWriter.name("type").value(order.getType());
 	                orderWriter.name("orderType").value(order.getOrderType());
-	                orderWriter.name("size").value(order.getOriginalSize());
-	                orderWriter.name("price").value(order.getactualPrice());
+	                orderWriter.name("size").value(order.getSize());
+	                orderWriter.name("price").value(order.getPrice());
 	                orderWriter.name("timestamp").value(order.getTimestamp());
 	                orderWriter.name("user").value(order.getUserOwner());
 	                orderWriter.endObject();
 				}
 			orderWriter.endArray();
 			
-			/*
-			 * JsonObject obj=new JsonObject(); obj.add("trades", allOrders);
-			 */
-			//gson.toJson(allOrders, orderWriter);
-			// orderWriter.write(gson.toJson(allOrders), orderWriter);
-			// System.out.println(storedOrders.size());
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
 	}
 
-	private static void loadOrders(CopyOnWriteArrayList<GenericOrder> storedOrders, String path) {
-		try (InputStreamReader freader = new InputStreamReader(new FileInputStream(path), StandardCharsets.UTF_8)) {
+	private static void loadOrders(CopyOnWriteArrayList<OrdineEvaso> storedOrders, String path) {
+		try (FileReader freader = new FileReader(path)) {
 			JsonElement fileElement = JsonParser.parseReader(freader);
 			if (fileElement.isJsonNull()) {
 				return;
 			}
 			JsonArray arr = fileElement.getAsJsonArray();
 			for (JsonElement orderElement : arr) {
+				counter.addAndGet(1);
 				JsonObject orderObject = orderElement.getAsJsonObject();
 				int orderId = orderObject.get("orderID").getAsInt();
-				OrderType type = stringToOrderType(orderObject.get("type").getAsString());
+				String type = orderObject.get("type").getAsString();
 				String orderType = orderObject.get("orderType").getAsString();
 				int size = orderObject.get("size").getAsInt();
 				int price = orderObject.get("price").getAsInt();
-				//System.out.println(price);
 				long timestamp = orderObject.get("timestamp").getAsLong();
 				String user = orderObject.get("user").getAsString();
-				if (!(orderType.equals("market") || orderType.equals("limit") || orderType.equals("stop"))) {
-					continue;
-				}
-				//GenericOrder ord = new GenericOrder(orderId, type, size, price, timestamp, user);
-				GenericOrder ord;
-				// ord.setOrderType(orderType);
-				if (orderType.equals("market")) {
-					//ord = new MarketOrder(type, size, orderId, price, timestamp, user);
-					storedOrders.add(new MarketOrder(type, size, orderId, price, timestamp, user));
-				} else if (orderType.equals("limit")) {
-					//ord = new LimitOrder(type, size, orderId, price, timestamp, user);
-					storedOrders.add(new LimitOrder(type, size, orderId, price, timestamp, user));
-				} else if (orderType.equals("stop")) {
-					//ord = new StopOrder(type, size, orderId, price, timestamp, user);
-					storedOrders.add(new StopOrder(type, size, orderId, price, timestamp, user));
-				}
-				//System.out.println("Prezzo: "+price);;
-				
+				storedOrders.add(new OrdineEvaso(orderId, size, price, type, orderType, user, timestamp));
 			}
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
 	}
 
-	private static String orderTypeToString(OrderType t) {
-		return ((t.equals(OrderType.ask)) ? "ask" : "bid");
-	}
-
-	private static OrderType stringToOrderType(String t) {
-		return ((t.equals("ask")) ? OrderType.ask : OrderType.bid);
-	}
 }

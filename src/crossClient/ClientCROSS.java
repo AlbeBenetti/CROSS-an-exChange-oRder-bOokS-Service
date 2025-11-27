@@ -5,7 +5,8 @@ import java.util.Scanner;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import risorseCondivise.*;
+
+import requestMessages.*;
 
 public class ClientCROSS {
 	
@@ -98,13 +99,12 @@ public class ClientCROSS {
 	private String order(String type) {
 		System.out.println("Selezionare tipo di ordine (ask/bid)");
 		String t=sc.nextLine();
-		t=t.toLowerCase();
+		t=t.toLowerCase().trim();
 		if(!(t.equals("ask")||t.equals("bid"))) {
 			System.out.println("Il tipo di ordine selezionato non è corretto, riprovare");
 			return null;
 		}
-		/*if(choice.toLowerCase().equals("ask")) t=OrderType.ask;
-		else t=OrderType.bid;*/
+		
 		System.out.println("Selezionare quantità da acquistare o vendere");
 		int size=Integer.parseInt(sc.nextLine());
 		if(size<=0) {

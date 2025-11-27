@@ -1,6 +1,5 @@
 package crossServer;
 
-import orderTypes.OrderType;
 
 public class SupportOrder {
 	String type;

@@ -3,8 +3,8 @@ package orderTypes;
 public class LimitOrder extends GenericOrder {
 	private int limitPrice;
 
-	public LimitOrder(String username, OrderType t, int size, int lim) {
-		super(username, t, size);
+	public LimitOrder(int id, String username, OrderType t, int size, int lim) {
+		super(id, username, t, size);
 		super.setOrderType("limit");
 		this.limitPrice=lim;
 	}

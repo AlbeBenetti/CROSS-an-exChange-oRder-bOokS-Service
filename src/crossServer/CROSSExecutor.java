@@ -11,25 +11,21 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 import com.google.gson.Gson;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.reflect.TypeToken;
-import com.google.gson.stream.JsonReader;
 
 import orderTypes.*;
-import risorseCondivise.*;
+import requestMessages.*;
 
 public class CROSSExecutor implements Runnable {
 
 	private Socket socket;
-	// hash map lega le chiavi rappresentanti gli username alla rispettiva password
-	// inserita
 	private ConcurrentHashMap<String, String> users;
-	//map che lega usename degli utenti attualmente connessi e la porta destinata alla ricezione dei messaggi udp. In uqesto modo è possibile mandare un messaggion udp
 	private ConcurrentHashMap<String, UserInfo> loggedInUsers;
 	String loggedUsername = null;
 	BufferedReader bufreader;
@@ -37,13 +33,15 @@ public class CROSSExecutor implements Runnable {
 	private Gson gson = new Gson();
 	OrderBook orders;
 	DatagramSocket socketUdp;
-	private ConcurrentLinkedQueue<GenericOrder> ordiniEvasi;
-	public CROSSExecutor(Socket s, ConcurrentHashMap<String, String> chm, ConcurrentHashMap<String, UserInfo> loggedInUsers, OrderBook orders, ConcurrentLinkedQueue<GenericOrder> ordinievasi) {
+	int timeout;
+	private ConcurrentLinkedQueue<OrdineEvaso> ordiniEvasi;
+	public CROSSExecutor(Socket s, ConcurrentHashMap<String, String> users, ConcurrentHashMap<String, UserInfo> loggedInUsers, OrderBook orders, ConcurrentLinkedQueue<OrdineEvaso> ordinievasi, int timeout) {
 		this.socket = s;
-		this.users = chm;
+		this.users = users;
 		this.loggedInUsers = loggedInUsers;
 		this.orders=orders;
 		this.ordiniEvasi=ordinievasi;
+		this.timeout=timeout;
 		try {
 			this.socketUdp = new DatagramSocket();
 		} catch (SocketException e) {
@@ -52,33 +50,31 @@ public class CROSSExecutor implements Runnable {
 	}
 
 	public void run() {
-		System.out.println("Client ricevuto");
 		try {
+			this.socket.setSoTimeout(timeout);
 			this.bufreader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
 
 			writer = new PrintWriter(new OutputStreamWriter(socket.getOutputStream()));
 
 			while (true) {
-				System.out.println("Attendo richiesta. Local: " + this.socket.getLocalPort() + " remote: "+ this.socket.getPort());
 				String str = bufreader.readLine();
-				System.out.println("Ricevuta stringa: " + str);
-				// verifica che non sia null
 				convertLine(str);
 				writer.flush(); 
 			}
 		} catch (IOException e) {
 			e.printStackTrace();
 		} catch(NullPointerException e) {
-			//e.printStackTrace();
-			//System.exit(1);
-			System.out.println("Comunicazione terminata");
+			System.out.println("Comunicazione terminata"+e.getMessage());
 		} finally {
 			try {
+				if(this.loggedUsername!=null) {
+					this.loggedInUsers.remove(this.loggedUsername);
+					this.loggedUsername=null;					
+				}
 				this.bufreader.close();
 				this.writer.close();
 				System.out.println("Stream chiusi");
 			} catch (IOException e) {
-				// TODO Auto-generated catch block
 				e.printStackTrace();
 			}
 		}
@@ -87,14 +83,12 @@ public class CROSSExecutor implements Runnable {
 	private void convertLine(String str) {
 		Richiesta r = gson.fromJson(str, Richiesta.class);
 		String res = null;
-		System.out.println("Operazione richiesta: " + r.getOperation());
 		switch (r.getOperation().toLowerCase()) {
 		case "register":
 			if (this.loggedUsername != null) {
 				System.out.println("Username loggato: "+this.loggedUsername);
 				res = gson.toJson(new Response(103,
 						"client already registered. Please logout before trying to log with another account"));
-				//rewriter.println(res);
 				break;
 			}
 			res = registration(str);
@@ -141,8 +135,6 @@ public class CROSSExecutor implements Runnable {
 			if (psw.length() > 4 || psw == psw.replaceAll(" ", "")) {
 				res = gson.toJson(new Response(100, "OK"));
 				this.users.put(tmpUser, psw);
-				//utenti ricevono messaggio udp
-				
 				this.loggedInUsers.put(tmpUser, new UserInfo(this.socket.getInetAddress(), port));
 				this.loggedUsername = tmpUser;
 			} else {
@@ -170,7 +162,6 @@ public class CROSSExecutor implements Runnable {
 			this.users.put(tmpUser, newP);
 			res = gson.toJson(new Response(100, "OK"));
 		}
-		// controlla se ci sono altri casi di errore
 		return res;
 	}
 
@@ -189,13 +180,12 @@ public class CROSSExecutor implements Runnable {
 			this.loggedInUsers.put(tmpUser, new UserInfo(this.socket.getInetAddress(), port));
 			this.loggedUsername=tmpUser;
 		} else {
-			res = gson.toJson(new Response(101, "username/old_password mismatch or non existent username"));
+			res = gson.toJson(new Response(101, "username/password mismatch or non existent username"));
 		}
 		return res;
 	}
 
 	private String logout() {
-		// String res=null;
 		if (this.loggedUsername == null) {
 			return gson.toJson(new Response(101, "User not logged in"));
 		}
@@ -206,22 +196,25 @@ public class CROSSExecutor implements Runnable {
 	}
 
 	private String sendOrder(String str, String tp) {
-		System.out.println("avvio lettura ordine, tipo: "+tp);
 		Richiesta<SupportOrder> r=gson.fromJson(str, new TypeToken<Richiesta<SupportOrder>>() {}.getType());
+		SupportOrder ordine=r.getValues();
+		String type=ordine.type;
+		if(!(type.equals("ask") || type.equals("bid"))) {
+			System.out.println("Tipo errato");
+			return null;
+		}
 		OrderType t=((r.getValues().type.equals("ask"))? OrderType.ask :OrderType.bid);
-		ArrayList<GenericOrder> ordersCompleted= new ArrayList<GenericOrder>();
+		ArrayList<OrdineEvaso> ordersCompleted= new ArrayList<OrdineEvaso>();
 		int retVal=this.orders.addOrder(this.loggedUsername, t, r.getValues().size, tp, r.getValues().price, ordersCompleted);
-		for(GenericOrder o : ordersCompleted) {
+		for(OrdineEvaso o : ordersCompleted) {
 			System.out.println(o.getOrderType());
 		}
-		System.out.println(ordersCompleted.toString());
 		if(!ordersCompleted.isEmpty()) {
 			completeOrder(ordersCompleted);
 		}
 		JsonObject res=new JsonObject();
 		res.addProperty("orderId", retVal);
 		String fin=gson.toJson(res);
-		System.out.println(fin);
 		return fin;
 	}
 	private String cancelOrder(String str) {
@@ -230,45 +223,29 @@ public class CROSSExecutor implements Runnable {
 		return gson.toJson(this.orders.cancelOrder(Integer.parseInt(idOrder), this.loggedUsername));
 	}
 	
-	private void completeOrder(ArrayList<GenericOrder> ordersCompleted) {
-		JsonObject ob = new JsonObject();
-		// veidi poi
-		for (GenericOrder ord : ordersCompleted) {
-			ord.setTimestamp();
+	private void completeOrder(ArrayList<OrdineEvaso> ordersCompleted) {
+		HashMap<String, ArrayList<OrdineEvaso>> map= new HashMap<String, ArrayList<OrdineEvaso>>();
+		for (OrdineEvaso ord : ordersCompleted) {
 			String u = ord.getUserOwner();
-			/*
-			 * if(!ordersForUser.containsKey(u)) { ordersForUser.put(u, new
-			 * ArrayList<GenericOrder>()); ordersForUser.get(u).add(ord); }
-			 */ 
-			this.ordiniEvasi.add(ord);
-			if (!this.loggedInUsers.containsKey(ord.getUserOwner()))
-				continue;
-			JsonObject ordmsg = new JsonObject();
-			ordmsg.addProperty("orderId", ord.getId());
-			ordmsg.addProperty("type", ((ord.getType() == OrderType.ask) ? "ask" : "bid"));
-			if (ord instanceof MarketOrder)
-				ordmsg.addProperty("orderType", "market");
-			else if (ord instanceof LimitOrder)
-				ordmsg.addProperty("orderType", "limit");
-			else if (ord instanceof StopOrder)
-				ordmsg.addProperty("orderType", "stop");
-			ordmsg.addProperty("size", ord.getOriginalSize());
-			ordmsg.addProperty("price", ord.getactualPrice());
-			ordmsg.addProperty("timestamp", System.currentTimeMillis());
-			ordmsg.addProperty("user", u);
-
-			if (!(ob.has(u))) {
-				ob.add(u, new JsonArray());
+			if(!(ord.getOrderId()==-1)) {
+				this.ordiniEvasi.add(ord);				
 			}
-			ob.getAsJsonArray(u).add(ordmsg);
+			if (!(map.containsKey(u))) {
+				map.put(u, new ArrayList<OrdineEvaso>());
+			}
+			map.get(u).add(ord);
 		}
-		for (String user : ob.keySet()) {
-			String userOrds = ob.get(user).toString();
-			byte[] buf = userOrds.getBytes();
+		for (String user : map.keySet()) {
 			UserInfo userInfo = this.loggedInUsers.get(user);
+			if(userInfo==null)
+				continue;
+			MessaggioOrdineEvaso mess = new MessaggioOrdineEvaso("closedTrades", map.get(user));
+			String res = gson.toJson(mess);
+			byte[] buf = res.getBytes();
 			DatagramPacket dp = new DatagramPacket(buf, buf.length, userInfo.getAddr(), userInfo.getPort());
 			try {
 				socketUdp.send(dp);
+				System.out.println("Messaggio inviato!");
 			} catch (IOException e) {
 				e.printStackTrace();
 			}
@@ -279,8 +256,7 @@ public class CROSSExecutor implements Runnable {
 		String data=r.getValues().get("month").getAsString();
 		int mese=Integer.parseInt(data.substring(0, 2));
 		int anno=Integer.parseInt(data.substring(2));
-		HashMap<Integer, OrdersHistory> res=this.orders.getHistory(mese, anno);
-		//System.out.println("Apertura: "+res.get(5).getApertura()+" Chiusura: "+res.get(5).getChisura()+" min: "+res.get(5).getMin()+" max: "+res.get(5).getMax());
+		LinkedHashMap<String, OrdersHistory> res=this.orders.getHistory(mese, anno);
 		return gson.toJson(res);
 	}
 }

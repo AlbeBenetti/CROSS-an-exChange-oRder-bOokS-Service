@@ -3,18 +3,21 @@ package crossClient;
 
 import java.io.BufferedReader;
 import java.io.FileInputStream;
+import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.DatagramSocket;
 import java.net.Socket;
-import java.util.HashMap;
+import java.net.SocketException;
+import java.util.LinkedHashMap;
 import java.util.Properties;
 import java.util.Scanner;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
-import risorseCondivise.*;
+import requestMessages.*;
 
 public class ClientMain {
 	
@@ -22,10 +25,9 @@ public class ClientMain {
 
 	public static void main(String[] args) throws IOException {
 		Properties p=new Properties();
-		String path=System.getProperty("user.dir") +"/configs/clientConfig.properties";
-		System.out.println("Path:" +path);
-		try(FileInputStream fis=new FileInputStream(path)){
-			p.load(fis);
+		
+		try(FileReader is = new FileReader("src/crossClient/resources/clientConfig.properties");){
+			p.load(is);
 		}
 		int numPorta=Integer.parseInt(p.getProperty("portaTCP"));
 		String indirizzo=p.getProperty("indirizzo");
@@ -33,12 +35,18 @@ public class ClientMain {
 		
 		boolean registered=false;
 		Scanner sc=new Scanner(System.in);
-		ClientCROSS c=new ClientCROSS(sc, gson, portaUdp);
-		System.out.printf("porta: %d, indirizzo: %s, portaUdp: %d\n", numPorta, indirizzo, portaUdp);
-		try(Socket socket=new Socket(indirizzo, numPorta);BufferedReader in=new BufferedReader(new InputStreamReader(socket.getInputStream()));PrintWriter out=new PrintWriter(socket.getOutputStream());DatagramSocket udpSocket=new DatagramSocket()){
+		DatagramSocket udpSocket=null;
+		try(Socket socket=new Socket(indirizzo, numPorta);BufferedReader in=new BufferedReader(new InputStreamReader(socket.getInputStream()));PrintWriter out=new PrintWriter(socket.getOutputStream());){
+			try {
+				udpSocket=new DatagramSocket(portaUdp);
+			}catch(SocketException e) {
+				udpSocket=new DatagramSocket();
+			}
+			System.out.printf("porta: %d, indirizzo: %s, portaUdp: %d\n", numPorta, indirizzo, portaUdp);
+			ClientCROSS c=new ClientCROSS(sc, gson, udpSocket.getLocalPort());
 			String actions="Possibili azioni:\n1-Register\n2-UpdateCredentials\n3-Login\n4-Logout\n5-InsertLimitOrder\n6-InsertMarketOrder\n7-InsertStopOrder\n8-CancelOrder\n9-GetPriceHistory\n10-Exit";
-			//Thread messageHandler=new Thread(new MessageHandler(udpSocket));
-			//messageHandler.start();
+			Thread messageHandler=new Thread(new MessageHandler(udpSocket));
+			messageHandler.start();
 			while(true) {
 				if(registered) {
 					System.out.println(actions);
@@ -55,7 +63,6 @@ public class ClientMain {
 				}
 				String jsObj=c.getJsonRequest(scelta);
 				if(jsObj==null) continue;
-				System.out.println(jsObj.toString());
 				out.println(jsObj);
 				out.flush();
 				String res=in.readLine();
@@ -63,16 +70,14 @@ public class ClientMain {
 					Response r=gson.fromJson(res, Response.class);
 					System.out.println("Response: "+r.getResponse()+", error message: "+r.getErrorMessage());
 					if(r.getResponse()==100) registered=true;
-				}
-				if(scelta.endsWith("order") && !(scelta.equals("cancelorder"))) {
-					readResponse(res, true, false);
+				} else if(scelta.endsWith("order") && !(scelta.equals("cancelorder"))) {
+					readResponse(res);
 				}else if(scelta.equals("getpricehistory")) {
-					HashMap<Integer, OrdersHistory> history=gson.fromJson(res, new TypeToken<HashMap<Integer, OrdersHistory>>() {}.getType());
-					for(Integer day :history.keySet()) {
-						//System.out.println(day);
-						System.out.println("- Giorno: "+day +" --> "+ history.get(day).toString());
+					LinkedHashMap<String, OrdersHistory> history=gson.fromJson(res, new TypeToken<LinkedHashMap<String, OrdersHistory>>() {}.getType());
+					for(String day :history.keySet()) {
+						System.out.println("- Giorno: "+day+" --> "+ history.get(day).toString());
 					}
-				}else{ 
+				}else{
 					Response r=gson.fromJson(res, Response.class);
 					System.out.println("Response: "+r.getResponse()+", error message: "+r.getErrorMessage());
 				}
@@ -84,16 +89,21 @@ public class ClientMain {
 				}
 			}
 		} catch(IOException e) {
-			//System.out.println("Errore dal server");
 			e.printStackTrace();
+		}finally {
+			if(udpSocket!=null) {
+				udpSocket.close();				
+			}
 		}
 		
 		
 	}
-	private static void readResponse(String res, boolean order, boolean priceHistory) {
-		if(order) {
-			OrderResponse r=gson.fromJson(res, OrderResponse.class);
-			System.out.println("Order identifier: "+r.orderId);
+	private static void readResponse(String res) {
+		OrderResponse r=gson.fromJson(res, OrderResponse.class);
+		if(r.orderId!=-1) {
+			System.out.println("Order number: "+r.orderId);
+		}else {
+			System.out.println("Unexpectedd error with your order (orderId: "+r.orderId+")");
 		}
 	}
 }
